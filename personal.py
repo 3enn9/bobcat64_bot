@@ -19,7 +19,14 @@ logging.basicConfig(
 
 def fetch_and_send_transactions():
     end_ = datetime.now()  # Текущее время
-    begin_ = end_ - timedelta(hours=1)  # Вычитаем 3 часа
+    begin_ = end_ - timedelta(hours=12)  # Вычитаем 3 часа
+
+    # Получаем текущую дату
+    now = datetime.now()
+
+    # Определяем начало и конец октября текущего года
+    begin_ = datetime(now.year, 10, 1)  # 1 октября
+    end_ = datetime(now.year, 10, 31, 23, 59, 59)
 
     # Форматируем даты в нужный формат
     begin = begin_.strftime('%Y-%m-%dT%H:%M:%S')
@@ -82,28 +89,33 @@ def fetch_and_send_transactions():
             TELEGRAM_CHAT_ID = os.getenv('CHAT_ID')
             BOT_TOKEN = os.getenv('BOT_TOKEN')
             for operation in operation_list:
-                formatted_date = datetime.strptime(operation.get('Date'), "%Y-%m-%dT%H:%M:%S").strftime(
-                    "%d.%m.%Y %H:%M:%S")
+                if operation.get('Holder') == 'КОЛОТОВКИН АНДРЕЙ':
+                    iso_date = operation['Date']
+                    formatted_date = datetime.fromisoformat(iso_date).strftime('%d.%m.%Y')
 
-                result_message = (f"<b>Код:</b> {operation['Code']}  \n"
-                                  f"<b>Дата:</b> {formatted_date}  \n"
-                                  f"<b>Держатель:</b> {operation.get('Holder')}  \n"
-                                  f"<b>Сумма:</b> {operation['Sum']:.2f}  \n"
-                                  f"Топливо:</b> {operation.get('GName')}  \n"
-                                  "<i>-------------------------</i>")
+                    # Форматируем строку вывода
+                    result_message = (
+                        f"{operation['Code']} "
+                        f"{formatted_date} "
+                        f"{operation['Holder']} "
+                        f"{operation['GName']} "
+                        f"{str(operation['Sum']).replace('.', ',')}"  # Заменяем точку на запятую
+                    )
 
-                telegram_url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
-                params = {
-                    'chat_id': TELEGRAM_CHAT_ID,
-                    'text': result_message,
-                    'parse_mode': 'HTML'  # Для поддержки форматирования (например, жирный текст)
-                }
+                    telegram_url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
+                    params = {
+                        'chat_id': TELEGRAM_CHAT_ID,
+                        'text': result_message,
+                        'parse_mode': 'HTML'  # Для поддержки форматирования (например, жирный текст)
+                    }
 
-                telegram_response = requests.post(telegram_url, data=params)
-                if telegram_response.status_code == 200:
-                    print("Сообщение успешно отправлено в Telegram.")
-                else:
-                    print(f"Ошибка при отправке сообщения в Telegram: {telegram_response.text}")
+                    print(result_message)
+                    # time.sleep(6000)
+                    # telegram_response = requests.post(telegram_url, data=params)
+                    # if telegram_response.status_code == 200:
+                    #     print("Сообщение успешно отправлено в Telegram.")
+                    # else:
+                    #     print(f"Ошибка при отправке сообщения в Telegram: {telegram_response.text}")
             logging.info('Ожидиние час')
         except json.JSONDecodeError:
             print("Ошибка: ответ не является JSON")
