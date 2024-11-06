@@ -17,7 +17,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'  # Формат даты и времени
 )
 
-def fetch_and_send_transactions():
+def fetch_and_send_transactions(holder):
     end_ = datetime.now()  # Текущее время
     begin_ = end_ - timedelta(hours=12)  # Вычитаем 3 часа
 
@@ -89,7 +89,7 @@ def fetch_and_send_transactions():
             TELEGRAM_CHAT_ID = os.getenv('CHAT_ID')
             BOT_TOKEN = os.getenv('BOT_TOKEN')
             for operation in operation_list:
-                if operation.get('Holder') == 'КОЛОТОВКИН АНДРЕЙ':
+                if operation.get('Holder') == holder:
                     iso_date = operation['Date']
                     formatted_date = datetime.fromisoformat(iso_date).strftime('%d.%m.%Y')
 
@@ -116,7 +116,7 @@ def fetch_and_send_transactions():
                     #     print("Сообщение успешно отправлено в Telegram.")
                     # else:
                     #     print(f"Ошибка при отправке сообщения в Telegram: {telegram_response.text}")
-            logging.info('Ожидиние час')
+            # logging.info('Ожидиние час')
         except json.JSONDecodeError:
             print("Ошибка: ответ не является JSON")
         except Exception as e:
@@ -125,13 +125,16 @@ def fetch_and_send_transactions():
         print(f"Ошибка: {response.status_code}, ответ: {response.text}")
 
 
-# Планирование задачи раз в 3 часа
-schedule.every(1).hours.do(fetch_and_send_transactions)
+# # Планирование задачи раз в 3 часа
+# schedule.every(1).hours.do(fetch_and_send_transactions)
 
 # Первая отправка сразу
-fetch_and_send_transactions()
+# fetch_and_send_transactions()
 
 # Запуск цикла планировщика
-while True:
-    schedule.run_pending()
-    time.sleep(1)  # Задержка в 1 секунду между проверками
+# while True:
+#     schedule.run_pending()
+#     time.sleep(1)  # Задержка в 1 секунду между проверками
+
+if __name__ == '__main__':
+    fetch_and_send_transactions(holder=input('Введите держателя карты: '))
