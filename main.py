@@ -1,130 +1,157 @@
-import json
+import os
 import asyncio
-# import base64
+import json
 import logging
-# import time
 from datetime import datetime, timedelta
-import pandas as pd
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from imapclient import IMAPClient
-from email import message_from_bytes
-from io import BytesIO
-import openpyxl
-from pytz import timezone
+from aiogram import Bot, Dispatcher
+from dotenv import load_dotenv
+import requests
+import schedule
+import time
 
-# Настройки логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from database.engine import create_db, drop_db
+from handlers import router
 
-# Настройки
-BOT_TOKEN = '7103569564:AAHQUnfhiIj8yoRgRpDsuazPaVC3leaX9s4'
-IMAP_SERVER = 'imap.yandex.com'
-EMAIL_USER = 'rn-cardmail@yandex.ru'
-EMAIL_PASS = 'bmrirqolilipxstq'
-TELEGRAM_CHAT_ID = '877804669'
-CHECK_INTERVAL = 1800  # Период опроса (в секундах)
-IMAP_PORT = 993
+# Загрузка переменных из .env
+load_dotenv('.env')
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+PASSWORD = os.getenv('PASSWORD')
+CONTRACT = os.getenv('CONTRACT')
+TELEGRAM_CHAT_ID = os.getenv('CHAT_ID')
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Пример с использованием часового пояса, замените 'Europe/Moscow' на ваш часовой пояс
-tz = timezone('Europe/Moscow')  # Замените на ваш часовой пояс
 
+async def fetch_and_send_transactions():
+    end_ = datetime.now()
+    begin_ = end_ - timedelta(hours=1)
 
-async def check_email():
-    while True:
+    # Форматирование даты
+    begin = begin_.strftime('%Y-%m-%dT%H:%M:%S')
+    end = end_.strftime('%Y-%m-%dT%H:%M:%S')
+
+    base_url = 'https://lkapi.rn-card.ru'
+    result_type = 'JSON'
+    u = 'Kal9n'
+    p = PASSWORD
+    contract = CONTRACT
+
+    # Запрос на получение операций
+    response = requests.get(
+        url=f'{base_url}/api/emv/v2/GetOperByContract',
+        params={
+            'u': u,
+            'p': p,
+            'contract': contract,
+            'begin': begin,
+            'end': end,
+            'type': result_type
+        }
+    )
+
+    # Сохранение ответа в файл
+    # with open("response.json", "w", encoding="utf-8") as f:
+    #     json.dump(response.json(), f, indent=4, ensure_ascii=False)
+    # print("Данные сохранены в файл response.json")
+
+    # Проверка успешности запроса
+    if response.status_code == 200:
+        logging.info("Запрос выполнен успешно.")
         try:
-            logger.info("Подключение к почтовому ящику...")
-            with IMAPClient(IMAP_SERVER, port=IMAP_PORT, ssl=True) as client:
-                client.login(EMAIL_USER, EMAIL_PASS)
-                logger.info("Успешный вход в почтовый ящик.")
-                client.select_folder('INBOX')
+            data = response.json()
+            operation_list = data.get('OperationList', [])
 
-                # Поиск писем, начиная с сегодняшнего дня
-                last_30_min = tz.localize(datetime.now() - timedelta(minutes=30))
-                messages = client.search(['SINCE', last_30_min.strftime('%d-%b-%Y')])
+            indexes_to_remove = []
 
-                logger.info(f"Найдено сообщений с сегодняшнего дня: {len(messages)}")
+            # Обработка возвратов
+            for index, operation in enumerate(operation_list):
+                ref_code = operation.get('Ref')
+                code = operation.get('Code')
+                if ref_code and ref_code != code:
+                    ref_sum = operation.get('Sum', 0)
+                    ref_value = operation.get('Value', 0)
+                    for operation_2 in operation_list:
+                        if operation_2.get('Code') == ref_code:
+                            operation_2['Sum'] -= ref_sum
+                            operation_2['Value'] -= ref_value
+                            indexes_to_remove.append(index)
+                            break
 
-                for uid, message_data in client.fetch(messages, 'RFC822').items():
-                    email_message = message_from_bytes(message_data[b'RFC822'])
-                    email_date = email_message['Date']
+            # Удаление операций возврата
+            for index in sorted(indexes_to_remove, reverse=True):
+                operation_list.pop(index)
 
-                    # Преобразование даты письма и фильтрация по времени
-                    email_datetime = datetime.strptime(email_date, '%a, %d %b %Y %H:%M:%S %z')
-                    if email_datetime >= last_30_min:
-                        logger.info(f"Обработка сообщения UID {uid} с темой: {email_message['subject']}")
-
-                        if email_message.is_multipart():
-                            for part in email_message.walk():
-                                content_type = part.get_content_type()
-                                logger.info(f"Найдено вложение с типом: {content_type}")
-
-                                if content_type in ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                                                    'application/vnd.ms-excel', 'application/octet-stream']:
-                                    file_data = part.get_payload(decode=True)
-                                    await process_excel(file_data)
-                                    client.add_flags(uid, '\\Seen')
-                                    logger.info(f"Сообщение UID {uid} обработано.")
-                        else:
-                            logger.info(f"Сообщение UID {uid} не является multipart и не содержит вложений.")
-            logger.info("Проверка завершена.")
+            # Форматирование и отправка данных в Telegram
+            for operation in operation_list:
+                if operation['GCat'] == 'FUEL':
+                    formatted_date = datetime.strptime(operation.get('Date'), "%Y-%m-%dT%H:%M:%S").strftime(
+                        "%d.%m.%Y %H:%M:%S")
+                    result_message = (
+                        f"<b>Код:</b> {operation['Code']}\n"
+                        f"<b>Дата:</b> {formatted_date}\n"
+                        f"<b>Держатель:</b> {operation.get('Holder')}\n"
+                        f"<b>Сумма:</b> {operation['Sum']:.2f}\n"
+                        f"<b>Топливо:</b> {operation.get('GName')}\n"
+                        "<i>-------------------------</i>"
+                    )
+                    await bot.send_message(TELEGRAM_CHAT_ID, result_message, parse_mode='HTML')
+            logging.info("Сообщения отправлены в Telegram.")
+        except json.JSONDecodeError:
+            logging.error("Ошибка: ответ не является JSON")
         except Exception as e:
-            logger.error(f"Ошибка при проверке почты: {e}")
-        await asyncio.sleep(CHECK_INTERVAL)
+            logging.error(f"Произошла ошибка: {e}")
+    else:
+        logging.error(f"Ошибка: {response.status_code}, ответ: {response.text}")
 
 
-async def process_excel(file_data):
-    logger.info("Начало обработки Excel-файла.")
-    try:
-        # Загружаем Excel-файл в DataFrame
-        df = pd.read_excel(BytesIO(file_data), dtype=str)  # Приводим к строкам, чтобы избежать NaN
-        df.dropna(how='all', inplace=True)  # Удаляем полностью пустые строки
-        df.dropna(axis=1, how='all', inplace=True)  # Удаляем полностью пустые столбцы
-
-        logger.info(f"Excel-файл успешно прочитан, содержит {df.shape[0]} строк и {df.shape[1]} столбцов.")
-
-        # Фильтруем строки с нужными данными (например, проверка заполненности столбцов)
-        filtered_rows = df[df.iloc[:, 0].notna() & df.iloc[:, 1].notna() & df.iloc[:, -2].notna()]
-
-        # Преобразование в JSON
-        json_data = filtered_rows.to_json(orient='records', force_ascii=False, indent=2)
-
-        # Загрузка данных из JSON
-        data = json.loads(json_data)
-
-        # Извлечение заголовков (первый элемент)
-        headers = list(data[0].values())
-
-        # Извлечение значений (второй элемент)
-        values = list(data[1].values())
-
-        # Создание словаря с заголовками в качестве ключей и значениями в качестве значений
-        result_dict = dict(zip(headers, values))
-
-        # Преобразование в красиво отформатированный JSON
-        pretty_json = json.dumps(result_dict, ensure_ascii=False, indent=2)
-
-        logger.info(f"Данные для отправки: {pretty_json}")
-
-        # Отправка JSON в Telegram
-        await bot.send_message(TELEGRAM_CHAT_ID, f"<pre>{pretty_json}</pre>", parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Ошибка при обработке Excel-файла: {e}")
+async def schedule_transactions():
+    # Планирование задачи каждую минуту
+    while True:
+        schedule.run_pending()
+        await asyncio.sleep(1)
 
 
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    await message.reply("Бот запущен и будет проверять новые письма.")
+async def on_startup(bot):
+    # await drop_db()
+    # await bot.set_webhook(url=f"{os.getenv('URL_APP')}")
+    # webhook_info = await bot.get_webhook_info()
+    # print(webhook_info)
+
+    await create_db()
+
+
+async def on_shutdown(bot):
+    print('бот лег')
 
 
 async def main():
-    await asyncio.create_task(check_email())
-    await dp.start_polling(bot)
+    # Удаление веб-хука перед использованием polling
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    # Регистрация обработчиков команд
+    dp.include_router(router)
+
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    # Сначала выполните функцию сразу
+    await fetch_and_send_transactions()
+
+    # Запуск планировщика
+    schedule.every(1).hours.do(lambda: asyncio.create_task(fetch_and_send_transactions()))
+
+    # Запуск polling и планировщика транзакций параллельно
+    await asyncio.gather(dp.start_polling(bot), schedule_transactions())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

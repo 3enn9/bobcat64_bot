@@ -48,10 +48,6 @@ def fetch_and_send_transactions():
     if response.status_code == 200:
         try:
             data = response.json()
-            # # Сохранение ответа в файл
-            # with open("response.json", "w", encoding="utf-8") as f:
-            #     json.dump(data, f, indent=4, ensure_ascii=False)
-            # print("Данные сохранены в файл response.json")
 
             # Извлечение списка операций
             operation_list: list = data.get('OperationList', [])
@@ -113,7 +109,7 @@ def fetch_and_send_transactions():
         print(f"Ошибка: {response.status_code}, ответ: {response.text}")
 
 
-# Планирование задачи раз в 3 часа
+# Планирование задачи раз в час
 schedule.every(1).hours.do(fetch_and_send_transactions)
 
 # Первая отправка сразу
